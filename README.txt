@@ -1,6 +1,10 @@
 Interface Atari ST Keyboard to USB HID Keyboard
 ===============================================
 
+This fork is modified to work with MISTer FPGA cores, keys did not work there. Happy modding :)
+
+Original description:
+
 This code runs on an Arduino Leonardo to provide an interface between 
 an Atari ST keyboard (520 STFM keyboard tested, others *may* work) and 
 a USB HID keyboard device.
