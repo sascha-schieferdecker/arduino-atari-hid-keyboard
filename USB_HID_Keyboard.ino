@@ -191,6 +191,10 @@ uint8_t scanCodes[] =
   0xE0  // NEnter
 };
 
+// Forward declarations for functions used before they are defined
+void send_key_event(uint8_t code, bool is_press);
+boolean process_modifier(uint8_t key);
+
 void setup(void)
 {
   // Initialize keyboard:
@@ -219,14 +223,14 @@ void loop()
   if (Serial1.available() > 0) process_keypress(Serial1.read());
 
   // Handle keyboard auto-repeat
-  auto_repeat();
+  // auto_repeat(); // disabled: we now honor real make/break
 }
 
 // Reset ST Keyboard
 void reset_st_keyboard(void)
 {
-  Serial1.print(0x80);
-  Serial1.print(1);
+  Serial1.write((uint8_t)0x80);
+  Serial1.write((uint8_t)0x01);
   pinMode(ST_KB_RESET, OUTPUT);
   digitalWrite(ST_KB_RESET, HIGH);
   delay(20);
@@ -236,18 +240,19 @@ void reset_st_keyboard(void)
 }
 
 // Process each keypress
+
+
 void process_keypress(uint8_t key)
 {
-  // Keypress
+  // Valid ST range
   if (((key & 0x7f) > 0) && ((key & 0x7f) < 0x73))
   {
-    // Break codes (other than modifiers) do not need to be sent 
-    // to the PC as the Leonardo keyboard interface handles that
     if (key & 0x80) // Break
     {
       last_make = 0;
       last_make_time = 0;
-      process_modifier(key);
+      // still forward to release non-modifier keys
+      convert_scancode(key);
     }
     else // Make
     {
@@ -258,14 +263,15 @@ void process_keypress(uint8_t key)
   }
 }
 
-// Convert from ST scancode to PC scancode
+
 void convert_scancode(uint8_t key)
 {
-  
   uint8_t break_code = key & 0x80;
-  uint8_t pc_code = scanCodes[key & 0x7f];
-  uint8_t escaped = (pc_code == 0xe0 ? true:false);
-  
+  uint8_t st_sc = key & 0x7f;
+  uint8_t pc_code = scanCodes[st_sc];
+  bool is_break = break_code;
+  bool escaped = (pc_code == 0xe0);
+
 #ifdef DEBUG
     Serial.print("Atari scancode: ");
     Serial.println(key, DEC);
@@ -277,52 +283,32 @@ void convert_scancode(uint8_t key)
     Serial.println(escaped, DEC);
 #endif
   
-  // Handle modifier key presses
+  // Handle modifier key presses (and CapsLock tap)
   if (process_modifier(key)) return;
 
-  // Special handling required for escaped keypresses
+  // Map escaped keys to Arduino HID keycodes, then send make/break
   if (escaped)
   {
-    switch (key & 0x7f)
+    switch (st_sc)
     {
-      case 0x48: // Up arrow
-        send_escaped_key(ARD_UP_ARROW);
-        break;
-      case 0x4b: // Left arrow
-        send_escaped_key(ARD_LEFT_ARROW);
-        break;
-      case 0x4d: // Right arrow
-        send_escaped_key(ARD_RIGHT_ARROW);
-        break;
-      case 0x50: // Down arrow
-        send_escaped_key(ARD_DOWN_ARROW);
-        break;
-      case 0x52: // Insert
-        send_escaped_key(ARD_INSERT);
-        break;
-      case 0x53: // Delete
-        send_escaped_key(ARD_DELETE);
-        break;
-      case 0x47: // Clr/Home
-        send_escaped_key(ARD_HOME);
-        break;
-      case 0x65: // Num /
-        send_escaped_key(0x2F);
-        break;
-      case 0x72: // Num Enter
-        send_escaped_key(ARD_RETURN);
-        break;
-      case 0x2b: // Tilde
-        send_escaped_key(0x23);
-        break;
-      case 0x62: // Help
-        send_escaped_key(ARD_F1);
-        break;
+      case 0x48: send_key_event(ARD_UP_ARROW, !is_break);    break; // Up
+      case 0x4b: send_key_event(ARD_LEFT_ARROW, !is_break);  break; // Left
+      case 0x4d: send_key_event(ARD_RIGHT_ARROW, !is_break); break; // Right
+      case 0x50: send_key_event(ARD_DOWN_ARROW, !is_break);  break; // Down
+      case 0x52: send_key_event(ARD_INSERT, !is_break);      break; // Insert
+      case 0x53: send_key_event(ARD_DELETE, !is_break);      break; // Delete
+      case 0x47: send_key_event(ARD_HOME, !is_break);        break; // Home
+      case 0x65: send_key_event('/', !is_break);             break; // Numpad /
+      case 0x72: send_key_event(ARD_RETURN, !is_break);      break; // Numpad Enter
+      case 0x2b: send_key_event('#', !is_break);             break; // Tilde/# mapping
+      case 0x62: send_key_event(ARD_F1, !is_break);          break; // Help -> F1
+      default: break;
     }
   }
   else
   {
-    Keyboard.write(pc_code);
+    // Non-escaped keys: send make/break with the mapped code
+    send_key_event(pc_code, !is_break);
   }
 }
 
@@ -334,7 +320,18 @@ void send_escaped_key(uint8_t key)
   Keyboard.release(key); 
 }
 
+
+// Press or release a key (ASCII for printable, ARD_* for specials)
+void send_key_event(uint8_t code, bool is_press)
+{
+  if (is_press) {
+    Keyboard.press(code);
+  } else {
+    Keyboard.release(code);
+  }
+}
 // Process modifier keypresses
+
 boolean process_modifier(uint8_t key)
 {
   // Modifier key press  
@@ -353,11 +350,14 @@ boolean process_modifier(uint8_t key)
         Keyboard.press(ARD_RIGHT_SHIFT);
         return true;        
       case ST_CAPS_LOCK:
+        // Treat as a tap (toggle), not a hold
         Keyboard.press(ARD_CAPS_LOCK);
+        delay(20);
+        Keyboard.release(ARD_CAPS_LOCK);
         return true;
     }
 
-  // Modifier key release
+  // Modifier key release (no Caps Lock here)
   switch (key & 0x7f)
     {
       case ST_LEFT_CTRL:
@@ -372,14 +372,10 @@ boolean process_modifier(uint8_t key)
       case ST_RIGHT_SHIFT:
         Keyboard.release(ARD_RIGHT_SHIFT);
         return true;        
-      case ST_CAPS_LOCK:
-        Keyboard.release(ARD_CAPS_LOCK);
-        return true;
     }
   
   return false;  
 }
-
 // Keyboard auto repeat
 void auto_repeat(void)
 {
